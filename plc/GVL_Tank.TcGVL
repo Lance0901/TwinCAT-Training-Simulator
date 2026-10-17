@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <GVL Name="GVL_Tank" Id="{ca38a250-089e-440d-846b-38fca305cc26}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL
+    // =====================================================================
+    // 場景 3:液位溫度反應槽 — 與模擬器的介面
+    //
+    // 液位 0..1000 mm,超溫門檻 85 °C。
+    // 互鎖提醒:rInletValve 開再大,bPumpRun 為 FALSE 時仍然沒有流量。
+    // =====================================================================
+
+    // ---------- PLC → 模擬器(致動器)----------
+    bPumpRun            : BOOL;     // 進料泵運轉
+    rInletValve         : LREAL;    // 進料閥開度 [0..100 %]
+    rOutletValve        : LREAL;    // 出料閥開度 [0..100 %]
+    rHeaterPower        : LREAL;    // 加熱器功率 [0..100 %]
+    bMixerRun           : BOOL;     // 攪拌器運轉(停止時加熱效率下降)
+
+    // ---------- 模擬器 → PLC(感測器)----------
+    rLevel              : LREAL;    // 液位 [mm]
+    rLevelPercent       : LREAL;    // 液位 [%]
+    rTemperature        : LREAL;    // 槽內溫度 [°C]
+    rFlowIn             : LREAL;    // 入流量 [L/min]
+    rFlowOut            : LREAL;    // 出流量 [L/min]
+    bLevelLowLow        : BOOL;     // 極低液位 LL (<= 100 mm)
+    bLevelLow           : BOOL;     // 低液位 L  (<= 200 mm)
+    bLevelHigh          : BOOL;     // 高液位 H  (>= 800 mm)
+    bLevelHighHigh      : BOOL;     // 極高液位 HH (>= 900 mm)
+    bOverTemp           : BOOL;     // 超溫警報 (>= 85 °C)
+    bDryRunAlarm        : BOOL;     // 乾燒警報(液位過低仍在加熱)
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

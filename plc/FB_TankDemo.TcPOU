@@ -1,0 +1,126 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="FB_TankDemo" Id="{c7f29961-03b8-4876-986e-166c04321e88}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+    場景 3 範例:液位 + 溫度雙迴路 PID 控制
+
+    液位迴路:PID → 進料閥開度(泵須先啟動,否則閥開再大也沒流量)
+    溫度迴路:PID → 加熱器功率
+
+    互鎖(安全邏輯優先於 PID 輸出):
+      - 極高液位 HH  → 強制關閉進料泵與進料閥
+      - 液位低於門檻 → 禁止加熱,避免乾燒
+      - 超溫         → 強制切斷加熱
+
+    調機練習建議:
+      1. 先只開液位迴路(rTempSetpoint 設為室溫),觀察 Kp 太大時的振盪
+      2. 加入積分,看穩態誤差如何被消除,以及積分過強造成的過衝
+      3. 打開溫度迴路,觀察進料冷水對溫度造成的擾動如何被補償
+*)
+FUNCTION_BLOCK FB_TankDemo
+VAR_INPUT
+    bStart          : BOOL;
+    bStop           : BOOL;
+    rLevelSetpoint  : LREAL := 600.0;    // 液位設定值 [mm]
+    rTempSetpoint   : LREAL := 55.0;     // 溫度設定值 [°C]
+    rCycleTime      : LREAL := 0.01;     // 呼叫週期 [s],需與 Task 週期一致
+END_VAR
+VAR_OUTPUT
+    bRunning        : BOOL;
+    bInterlock      : BOOL;             // 目前有互鎖生效
+    rLevelOutput    : LREAL;             // 液位 PID 原始輸出
+    rTempOutput     : LREAL;             // 溫度 PID 原始輸出
+END_VAR
+VAR
+    fbStart         : R_TRIG;
+    fbStop          : R_TRIG;
+    fbLevelPid      : FB_SimplePID;
+    fbTempPid       : FB_SimplePID;
+
+    // 加熱允許的最低液位 [mm]。模擬器在低於 80 mm 加熱時會發出乾燒警報,
+    // 這裡留一段餘裕,讓學員看得到「保護提前動作」而不是等警報才反應。
+    rMinHeatLevel   : LREAL := 250.0;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbStart(CLK := bStart);
+fbStop(CLK := bStop);
+
+IF fbStart.Q THEN
+    bRunning := TRUE;
+END_IF
+IF fbStop.Q THEN
+    bRunning := FALSE;
+END_IF
+
+// =====================================================================
+// 液位迴路
+// =====================================================================
+fbLevelPid(
+    bEnable    := bRunning,
+    rSetpoint  := rLevelSetpoint,
+    rActual    := GVL_Tank.rLevel,
+    rKp        := 0.5,
+    rTi        := 25.0,
+    rTd        := 0.0,
+    rOutMin    := 0.0,
+    rOutMax    := 100.0,
+    rCycleTime := rCycleTime
+);
+rLevelOutput := fbLevelPid.rOutput;
+
+// =====================================================================
+// 溫度迴路
+// =====================================================================
+fbTempPid(
+    bEnable    := bRunning,
+    rSetpoint  := rTempSetpoint,
+    rActual    := GVL_Tank.rTemperature,
+    rKp        := 8.0,
+    rTi        := 120.0,
+    rTd        := 10.0,
+    rOutMin    := 0.0,
+    rOutMax    := 100.0,
+    rCycleTime := rCycleTime
+);
+rTempOutput := fbTempPid.rOutput;
+
+// =====================================================================
+// 輸出到致動器 + 安全互鎖
+// 互鎖寫在 PID 之後,確保任何情況下安全邏輯都蓋得過控制輸出
+// =====================================================================
+bInterlock := FALSE;
+
+IF NOT bRunning THEN
+    GVL_Tank.bPumpRun      := FALSE;
+    GVL_Tank.rInletValve   := 0;
+    GVL_Tank.rOutletValve  := 0;
+    GVL_Tank.rHeaterPower  := 0;
+    GVL_Tank.bMixerRun     := FALSE;
+ELSE
+    // ---- 進料 ----
+    IF GVL_Tank.bLevelHighHigh THEN
+        GVL_Tank.bPumpRun    := FALSE;
+        GVL_Tank.rInletValve := 0;
+        bInterlock := TRUE;
+    ELSE
+        GVL_Tank.bPumpRun    := TRUE;
+        GVL_Tank.rInletValve := rLevelOutput;
+    END_IF
+
+    // ---- 出料:本例固定小開度模擬持續耗用,讓液位迴路有事可做 ----
+    GVL_Tank.rOutletValve := 15.0;
+
+    // ---- 加熱 ----
+    IF (GVL_Tank.rLevel < rMinHeatLevel) OR GVL_Tank.bOverTemp THEN
+        GVL_Tank.rHeaterPower := 0;
+        bInterlock := TRUE;
+    ELSE
+        GVL_Tank.rHeaterPower := rTempOutput;
+    END_IF
+
+    // ---- 攪拌:有液體就開,提升加熱均勻度 ----
+    GVL_Tank.bMixerRun := NOT GVL_Tank.bLevelLowLow;
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

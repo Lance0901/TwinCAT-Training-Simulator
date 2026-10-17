@@ -1,0 +1,28 @@
+{
+  "name": "twincat-training-simulation",
+  "version": "0.1.4",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "TwinCAT 訓練用機台模擬器 — Node.js ADS 橋接 + Three.js 3D 視覺化",
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "mock": "cross-env SIM_MODE=mock node server/index.js",
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
+  },
+  "dependencies": {
+    "ads-client": "^2.1.0",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "three": "^0.171.0",
+    "vite": "^6.0.7"
+  }
+}

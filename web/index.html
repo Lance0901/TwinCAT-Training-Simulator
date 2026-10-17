@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TwinCAT 訓練模擬器</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⚙️</text></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">⚙</span>
+          <div>
+            <h1>TwinCAT 訓練模擬器</h1>
+            <p id="scenario-subtitle">載入中…</p>
+          </div>
+        </div>
+
+        <nav class="scenario-tabs" id="scenario-tabs"></nav>
+
+        <div class="topbar-right">
+          <div class="conn" id="conn-badge">
+            <span class="dot"></span>
+            <span class="conn-text">連線中…</span>
+          </div>
+          <button class="btn btn-ghost" id="btn-coords">座標表</button>
+          <button class="btn btn-ghost" id="btn-mapping">I/O 對映</button>
+          <button class="btn btn-ghost" id="btn-settings">連線設定</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="viewport-pane">
+          <div id="viewport"></div>
+          <div class="viewport-overlay" id="viewport-hud"></div>
+          <div class="viewport-toolbar">
+            <button class="btn btn-sm" id="btn-reset">重置模擬</button>
+            <span class="spacer"></span>
+            <span class="stat" id="stat-cycle">—</span>
+          </div>
+        </section>
+
+        <aside class="side-pane">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>致動器命令</h2>
+              <span class="panel-tag tag-out">PLC → 模擬器</span>
+            </div>
+            <p class="panel-hint" id="actuator-hint"></p>
+            <div class="io-list" id="io-outputs"></div>
+            <button class="btn btn-sm btn-ghost" id="btn-clear-overrides">解除所有手動覆寫</button>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>感測器回饋</h2>
+              <span class="panel-tag tag-in">模擬器 → PLC</span>
+            </div>
+            <div class="io-list" id="io-inputs"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>物理參數</h2></div>
+            <div class="param-list" id="params"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>手動操作</h2></div>
+            <div class="cmd-list" id="commands"></div>
+          </div>
+
+          <div class="panel panel-log">
+            <div class="panel-head">
+              <h2>訊息記錄</h2>
+              <button class="btn btn-xs btn-ghost" id="btn-clear-log">清除</button>
+            </div>
+            <ul class="log" id="log"></ul>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog" class="dialog">
+      <form method="dialog" class="dialog-body">
+        <h2>ADS 連線設定</h2>
+        <p class="dialog-hint">
+          本機 TwinCAT 請使用 <code>127.0.0.1.1.1</code>,不需要建立 ADS Route。<br />
+          連遠端 IPC/CX 時填對方的 AmsNetId 與 IP,並先在兩端互相建立 Route。
+        </p>
+
+        <div class="scan-box">
+          <div class="scan-head">
+            <button type="button" class="btn btn-sm" id="btn-scan">搜尋可用的 TwinCAT</button>
+            <span class="stat" id="scan-status">列出本機與已建立 Route 的目標</span>
+          </div>
+          <div class="scan-list" id="scan-list"></div>
+        </div>
+
+        <label>
+          目標 AmsNetId
+          <input type="text" id="cfg-netid" placeholder="127.0.0.1.1.1" />
+        </label>
+        <label>
+          ADS 埠號
+          <input type="number" id="cfg-port" placeholder="851" />
+          <small>第一個 PLC Runtime = 851,第二個 = 852</small>
+        </label>
+        <label>
+          Router IP(僅連遠端時需要)
+          <input type="text" id="cfg-router" placeholder="留空 = 本機" />
+        </label>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" id="btn-mock">切換為手動模式</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-ghost" id="btn-disconnect">中斷連線</button>
+          <button type="button" class="btn btn-primary" id="btn-connect">連線</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="mapping-dialog" class="dialog dialog-wide">
+      <div class="dialog-body">
+        <div class="mapping-head">
+          <h2>I/O 對映 — <span id="mapping-scenario"></span></h2>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-mapping-close">關閉</button>
+        </div>
+        <p class="dialog-hint">
+          左邊是這台機器有哪些訊號,右邊填它要接到 PLC 裡的哪個變數。<br />
+          連上 TwinCAT 後按「讀取 PLC 變數清單」,輸入框就會有下拉選單可挑;也可以直接手動輸入完整路徑。
+        </p>
+
+        <div class="mapping-toolbar">
+          <button type="button" class="btn btn-sm" id="btn-fetch-symbols">讀取 PLC 變數清單</button>
+          <span class="stat" id="symbol-count">尚未讀取</span>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-reset-mapping">全部恢復預設</button>
+        </div>
+
+        <div class="mapping-list" id="mapping-list"></div>
+
+        <p class="mapping-legend">
+          <span class="bind ok">✓</span> 已綁定
+          <span class="bind fail">✕</span> 綁定失敗(滑鼠移上去看原因)
+          <span class="bind idle">○</span> 未連線
+          <span class="mapping-changed-dot"></span> 已改過預設值
+        </p>
+        <p class="mapping-storage">
+          改過的綁定會自動存檔,重開後沿用(連同上次停在哪個場景):
+          <code id="mapping-config-dir">config</code>
+        </p>
+      </div>
+    </dialog>
+
+    <dialog id="coords-dialog" class="dialog dialog-wide">
+      <div class="dialog-body">
+        <div class="mapping-head">
+          <h2>座標表 — <span id="coords-scenario"></span></h2>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-coords-close">關閉</button>
+        </div>
+        <p class="dialog-hint" id="coords-hint"></p>
+        <div class="coords-body" id="coords-body"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-sm" id="btn-copy-st">複製 ST 宣告</button>
+          <span class="stat" id="copy-status"></span>
+          <span class="spacer"></span>
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

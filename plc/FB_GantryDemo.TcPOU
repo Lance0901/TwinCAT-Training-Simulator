@@ -1,0 +1,386 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="FB_GantryDemo" Id="{591e0410-04c0-41fe-a385-17cda785ef49}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+    場景 2 範例:XY 滑台 Pick & Place(TwinCAT NC 虛擬軸版)
+
+    需要:
+      - 函式庫 Tc2_MC2
+      - 兩個 NC 軸(建立步驟見 README),並在 XAE 中把 AXIS_REF 連結到對應的軸
+
+    流程:
+      致能 → X 尋原點 → Y 尋原點 → 移到取料位 → 下降 → 吸附 → 抬升
+      → 移到放料格 → 下降 → 釋放 → 抬升 → 下一格
+
+    原點復歸刻意用「點動找感測器 + MC_SetPosition」而不是 MC_Home:
+    虛擬軸沒有實體原點編碼器,但模擬器有提供 bHomeSwitchX/Y 這兩顆感測器,
+    走一次真實的尋原點流程,學員才知道原點是怎麼建立起來的。
+
+    碰撞保護:模擬器的 bCollision 一亮就立刻停軸並跳到錯誤狀態。
+    注意這是「機械」撞了 —— NC 自己不會知道,因為虛擬軸沒有真的負載。
+*)
+FUNCTION_BLOCK FB_GantryDemo
+VAR_IN_OUT
+    AxisX           : AXIS_REF;
+    AxisY           : AXIS_REF;
+END_VAR
+VAR_INPUT
+    bStart          : BOOL;     // 上升緣啟動
+    bStop           : BOOL;     // 上升緣停止
+    bReset          : BOOL;     // 警報復歸(同時清除模擬器計數與 NC 軸錯誤)
+END_VAR
+VAR_OUTPUT
+    iState          : INT;
+    bRunning        : BOOL;
+    bCycleDone      : BOOL;     // 9 格放滿
+    bError          : BOOL;
+    sErrorText      : STRING(80);
+END_VAR
+VAR
+    fbStart         : R_TRIG;
+    fbStop          : R_TRIG;
+    fbResetTrig     : R_TRIG;
+
+    // ---- MC2 功能塊 ----
+    fbPowerX        : MC_Power;
+    fbPowerY        : MC_Power;
+    fbMoveX         : MC_MoveAbsolute;
+    fbMoveY         : MC_MoveAbsolute;
+    fbJogX          : MC_MoveVelocity;
+    fbJogY          : MC_MoveVelocity;
+    fbHaltX         : MC_Halt;
+    fbHaltY         : MC_Halt;
+    fbSetPosX       : MC_SetPosition;
+    fbSetPosY       : MC_SetPosition;
+    fbResetX        : MC_Reset;
+    fbResetY        : MC_Reset;
+
+    // ---- 執行旗標(MC 功能塊靠 Execute 上升緣觸發)----
+    bExecMove       : BOOL;
+    bExecJogX       : BOOL;
+    bExecJogY       : BOOL;
+    bExecHalt       : BOOL;
+    bExecSetPos     : BOOL;
+    bExecReset      : BOOL;
+
+    iPlaceIndex     : INT;
+    rTargetX        : LREAL;
+    rTargetY        : LREAL;
+    tonRelease      : TON;
+
+    // =====================================================================
+    // NC 的 Scaling Factor —— 直接向 NC 問,不用手填。
+    //
+    // 背景:NC 沒有把「增量」開放給 PLC(AXIS_REF.NcToPlc 裡全是使用者單位,
+    // ActPos 是 mm),所以要由 PLC 反算一次。除數必須是 NC 真正在用的縮放,
+    // 手填的話一旦跟 NC 設定不一致,演練到的就變成「PLC 填錯」而不是「NC 設錯」。
+    //
+    // MC_ReadParameter 搭配 MC_AxisParameter.AxisEncoderScalingFactor
+    // (NC IndexOffset 16#0001_0006,單位 mm/increment)可以直接讀出來,
+    // 這樣用的一定是 NC 當下生效的值。
+    //
+    // TC3 另有 AxisEncoderScalingNumerator (16#0001_0023) 與
+    // AxisEncoderScalingDenominator (16#0001_0024) 可分別讀分子分母。
+    // =====================================================================
+    fbReadScaleX    : MC_ReadParameter;
+    fbReadScaleY    : MC_ReadParameter;
+    rNcScalingX     : LREAL;              // NC 實際的 Scaling Factor [mm/inc]
+    rNcScalingY     : LREAL;
+    // 萬一參數讀不到(軸還沒連結、NC 未啟動)時的備援值,依機台規格自行調整
+    rScalingFallback : LREAL := 0.0005;   // = 10 mm/rev / (10000 inc/rev × 2)
+
+    // ---- 運動參數 ----
+    rVelocity       : LREAL := 200.0;   // 定位速度 [mm/s]
+    rHomeVelocity   : LREAL := 40.0;    // 尋原點速度 [mm/s]
+    rAccel          : LREAL := 1000.0;  // [mm/s²]
+    rDecel          : LREAL := 1000.0;
+
+    // =====================================================================
+    // 取放料格位座標(對應模擬器的座標表,網頁上按「座標表」可以查、可以複製)
+    //
+    // 取料盤 3×4 = 12 格,一格一格取:第 0 格取完才換第 1 格。
+    // 該去哪一格不用自己數 —— 模擬器的 iNextPickIndex 會直接告訴你。
+    // =====================================================================
+    rPickX0         : LREAL := 40.0;
+    rPickY0         : LREAL := 40.0;
+    rPickDx         : LREAL := 42.0;
+    rPickDy         : LREAL := 42.0;
+    iPickCols       : INT := 3;
+
+    // 放料盤 3×3 = 9 格
+    rGridX0         : LREAL := 200.0;
+    rGridY0         : LREAL := 60.0;
+    rGridDx         : LREAL := 60.0;
+    rGridDy         : LREAL := 60.0;
+    iGridCols       : INT := 3;
+    iGridCount      : INT := 9;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbStart(CLK := bStart);
+fbStop(CLK := bStop);
+fbResetTrig(CLK := bReset);
+
+// =====================================================================
+// 把軸的狀態交給模擬器
+//
+// 真正驅動機構的是「增量」:NC 依自己的 Scaling Factor 把 mm 換成脈衝數送出去,
+// 模擬器再依它自己的機械規格把脈衝換回距離。兩邊的規格對不上,機構就走錯距離。
+// rNcActPos 只是拿來對照用的 —— 它是「NC 以為自己在哪」。
+// =====================================================================
+// 向 NC 問出它實際使用的縮放係數(mm/increment),當作反算增量的除數。
+// 不用手填,自然也不會有「PLC 填的和 NC 設的不一樣」這種假議題。
+fbReadScaleX(Axis := AxisX, Enable := TRUE, ParameterNumber := MC_AxisParameter.AxisEncoderScalingFactor);
+fbReadScaleY(Axis := AxisY, Enable := TRUE, ParameterNumber := MC_AxisParameter.AxisEncoderScalingFactor);
+
+IF fbReadScaleX.Valid AND (fbReadScaleX.Value > 0) THEN
+    rNcScalingX := fbReadScaleX.Value;
+ELSIF rNcScalingX <= 0 THEN
+    rNcScalingX := rScalingFallback;
+END_IF
+
+IF fbReadScaleY.Valid AND (fbReadScaleY.Value > 0) THEN
+    rNcScalingY := fbReadScaleY.Value;
+ELSIF rNcScalingY <= 0 THEN
+    rNcScalingY := rScalingFallback;
+END_IF
+
+IF (rNcScalingX > 0) AND (rNcScalingY > 0) THEN
+    GVL_Gantry.iNcActIncX := LREAL_TO_DINT(AxisX.NcToPlc.ActPos / rNcScalingX);
+    GVL_Gantry.iNcActIncY := LREAL_TO_DINT(AxisY.NcToPlc.ActPos / rNcScalingY);
+END_IF
+
+// GVL 宣告成 LREAL,與 NcToPlc.ActPos 同型別,不必再轉一次
+GVL_Gantry.rNcActPosX := AxisX.NcToPlc.ActPos;
+GVL_Gantry.rNcActPosY := AxisY.NcToPlc.ActPos;
+
+// =====================================================================
+// 警報復歸:同時清掉 NC 軸錯誤與模擬器的碰撞閂鎖
+// =====================================================================
+GVL_Gantry.bResetAlarm := bReset;
+IF fbResetTrig.Q THEN
+    bExecReset := TRUE;
+    bError     := FALSE;
+    sErrorText := '';
+END_IF
+
+// =====================================================================
+// 安全監視:機械撞了就立刻停軸
+// NC 不會自己發現 —— 虛擬軸沒有真實負載,是模擬器代替機械喊痛的
+// =====================================================================
+IF GVL_Gantry.bCollision AND (iState <> 900) AND (iState <> 0) THEN
+    bError     := TRUE;
+    sErrorText := '機械碰撞:NC 命令超出行程,請檢查 NC 軸的軟體極限設定';
+    iState     := 900;
+END_IF
+
+IF (fbPowerX.Error OR fbPowerY.Error OR fbMoveX.Error OR fbMoveY.Error) AND (iState <> 900) THEN
+    bError     := TRUE;
+    sErrorText := 'NC 軸錯誤,請查看 ErrorID';
+    iState     := 900;
+END_IF
+
+IF fbStop.Q THEN
+    iState := 0;
+END_IF
+
+CASE iState OF
+
+0:  // ---- 停止 ----
+    bRunning := FALSE;
+    bExecMove := FALSE;
+    bExecJogX := FALSE;
+    bExecJogY := FALSE;
+    GVL_Gantry.bNozzleDown := FALSE;
+    GVL_Gantry.bVacuumOn   := FALSE;
+    IF fbStart.Q AND NOT bError THEN
+        bCycleDone  := FALSE;
+        iPlaceIndex := 0;
+        iState      := 5;
+    END_IF
+
+5:  // ---- 致能兩軸 ----
+    bRunning := TRUE;
+    IF fbPowerX.Status AND fbPowerY.Status THEN
+        iState := 10;
+    END_IF
+
+10: // ---- X 尋原點:負向點動 ----
+    IF GVL_Gantry.bHomeSwitchX THEN
+        bExecJogX := FALSE;
+        bExecHalt := TRUE;
+        iState    := 15;
+    ELSE
+        bExecJogX := TRUE;
+    END_IF
+
+15: // ---- X 停穩後把當前位置定義為 0 ----
+    IF fbHaltX.Done THEN
+        bExecHalt   := FALSE;
+        bExecSetPos := TRUE;
+        IF fbSetPosX.Done THEN
+            bExecSetPos := FALSE;
+            iState      := 20;
+        END_IF
+    END_IF
+
+20: // ---- Y 尋原點 ----
+    IF GVL_Gantry.bHomeSwitchY THEN
+        bExecJogY := FALSE;
+        bExecHalt := TRUE;
+        iState    := 25;
+    ELSE
+        bExecJogY := TRUE;
+    END_IF
+
+25: // ---- Y 原點設定 ----
+    IF fbHaltY.Done THEN
+        bExecHalt   := FALSE;
+        bExecSetPos := TRUE;
+        IF fbSetPosY.Done THEN
+            bExecSetPos := FALSE;
+            iState      := 30;
+        END_IF
+    END_IF
+
+30: // ---- 移動到取料位 ----
+    // 走到這裡代表原點復歸已完成,bHomingRequired 應該已經自動解除。
+    // 若還是 TRUE,表示剛才的尋原點沒真的把機構開回感測器範圍 —— 別硬跑下去。
+    IF GVL_Gantry.bHomingRequired THEN
+        bError     := TRUE;
+        sErrorText := '原點復歸未完成,機構座標仍不可信';
+        iState     := 900;
+    ELSIF NOT GVL_Gantry.bPartAtPick THEN
+        // 取料盤空了,停在原地等補料
+        bExecMove := FALSE;
+    ELSE
+        // 依模擬器指定的格號算座標 —— 停到別格是吸不到料的
+        rTargetX := rPickX0 + INT_TO_LREAL(GVL_Gantry.iNextPickIndex MOD iPickCols) * rPickDx;
+        rTargetY := rPickY0 + INT_TO_LREAL(GVL_Gantry.iNextPickIndex / iPickCols) * rPickDy;
+        bExecMove := TRUE;
+        IF fbMoveX.Done AND fbMoveY.Done THEN
+            bExecMove := FALSE;
+            iState    := 40;
+        END_IF
+    END_IF
+
+40: // ---- 吸嘴下降 ----
+    GVL_Gantry.bNozzleDown := TRUE;
+    IF GVL_Gantry.bNozzleIsDown THEN
+        iState := 50;
+    END_IF
+
+50: // ---- 真空吸附,等真空確認 ----
+    GVL_Gantry.bVacuumOn := TRUE;
+    IF GVL_Gantry.bPartHeld THEN
+        iState := 60;
+    END_IF
+
+60: // ---- 抬升 ----
+    GVL_Gantry.bNozzleDown := FALSE;
+    IF GVL_Gantry.bNozzleIsUp THEN
+        rTargetX := rGridX0 + INT_TO_LREAL(iPlaceIndex MOD iGridCols) * rGridDx;
+        rTargetY := rGridY0 + INT_TO_LREAL(iPlaceIndex / iGridCols) * rGridDy;
+        iState   := 70;
+    END_IF
+
+70: // ---- 移動到放料格 ----
+    bExecMove := TRUE;
+    IF fbMoveX.Done AND fbMoveY.Done THEN
+        bExecMove := FALSE;
+        iState    := 80;
+    END_IF
+
+80: // ---- 吸嘴下降到放料高度 ----
+    GVL_Gantry.bNozzleDown := TRUE;
+    IF GVL_Gantry.bNozzleIsDown THEN
+        iState := 90;
+    END_IF
+
+90: // ---- 釋放:吸嘴必須維持在下限位,否則模擬器判定為掉件 ----
+    GVL_Gantry.bVacuumOn := FALSE;
+    tonRelease(IN := TRUE, PT := T#300MS);
+    IF tonRelease.Q THEN
+        tonRelease(IN := FALSE);
+        iState := 100;
+    END_IF
+
+100: // ---- 抬升,準備下一循環 ----
+    GVL_Gantry.bNozzleDown := FALSE;
+    IF GVL_Gantry.bNozzleIsUp THEN
+        iPlaceIndex := iPlaceIndex + 1;
+        IF iPlaceIndex >= iGridCount THEN
+            iState := 110;
+        ELSE
+            iState := 30;
+        END_IF
+    END_IF
+
+110: // ---- 全部放滿 ----
+    bCycleDone := TRUE;
+    bRunning   := FALSE;
+
+900: // ---- 錯誤:停軸,等操作員確認 ----
+    //
+    // 確認警報後不能直接回去跑 —— 撞過之後機構與 NC 的座標已經對不上,
+    // 模擬器的 bHomingRequired 會一直是 TRUE,期間吸附不會成立。
+    // 所以這裡跳回步驟 5 重新致能並走一次完整的原點復歸,
+    // 等機構真的開回原點感測器,那個旗標才會自動解除。
+    bRunning  := FALSE;
+    bExecMove := FALSE;
+    bExecJogX := FALSE;
+    bExecJogY := FALSE;
+    bExecHalt := TRUE;
+    GVL_Gantry.bVacuumOn   := FALSE;
+    GVL_Gantry.bNozzleDown := FALSE;
+    IF fbResetTrig.Q AND NOT GVL_Gantry.bCollision THEN
+        bExecHalt   := FALSE;
+        iPlaceIndex := 0;
+        iState      := 5;   // → 致能 → 尋原點,復歸完成才算真的排除
+    END_IF
+
+END_CASE
+
+// =====================================================================
+// MC2 功能塊呼叫 —— 必須每個週期都呼叫,狀態機只負責控制 Execute
+// =====================================================================
+fbPowerX(
+    Axis            := AxisX,
+    Enable          := bRunning,
+    Enable_Positive := bRunning,
+    Enable_Negative := bRunning,
+    Override        := 100.0
+);
+fbPowerY(
+    Axis            := AxisY,
+    Enable          := bRunning,
+    Enable_Positive := bRunning,
+    Enable_Negative := bRunning,
+    Override        := 100.0
+);
+
+fbMoveX(Axis := AxisX, Execute := bExecMove, Position := rTargetX,
+        Velocity := rVelocity, Acceleration := rAccel, Deceleration := rDecel);
+fbMoveY(Axis := AxisY, Execute := bExecMove, Position := rTargetY,
+        Velocity := rVelocity, Acceleration := rAccel, Deceleration := rDecel);
+
+fbJogX(Axis := AxisX, Execute := bExecJogX, Velocity := rHomeVelocity,
+       Acceleration := rAccel, Deceleration := rDecel, Direction := MC_Negative_Direction);
+fbJogY(Axis := AxisY, Execute := bExecJogY, Velocity := rHomeVelocity,
+       Acceleration := rAccel, Deceleration := rDecel, Direction := MC_Negative_Direction);
+
+fbHaltX(Axis := AxisX, Execute := bExecHalt, Deceleration := rDecel);
+fbHaltY(Axis := AxisY, Execute := bExecHalt, Deceleration := rDecel);
+
+fbSetPosX(Axis := AxisX, Execute := bExecSetPos, Position := 0.0);
+fbSetPosY(Axis := AxisY, Execute := bExecSetPos, Position := 0.0);
+
+fbResetX(Axis := AxisX, Execute := bExecReset);
+fbResetY(Axis := AxisY, Execute := bExecReset);
+
+// Reset 是單次動作,完成後自己把 Execute 放掉
+IF fbResetX.Done OR fbResetX.Error OR fbResetY.Done OR fbResetY.Error THEN
+    bExecReset := FALSE;
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

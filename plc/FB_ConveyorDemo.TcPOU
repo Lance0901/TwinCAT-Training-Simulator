@@ -1,0 +1,110 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="FB_ConveyorDemo" Id="{3849e595-315d-45e7-9bea-25b3feb3add9}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+    場景 1 範例:輸送帶分料站控制邏輯
+
+    流程:進料 → 輸送 → 檢測位停帶判別 → NG 推出 / OK 放行 → 循環
+
+    這支程式刻意寫成「停帶再判別」的狀態機,因為零件通過檢測窗只有零點幾秒,
+    邊走邊推會來不及。學員可以嘗試改成「預測式推料」當作進階練習。
+*)
+FUNCTION_BLOCK FB_ConveyorDemo
+VAR_INPUT
+    bStart          : BOOL;     // 上升緣啟動
+    bStop           : BOOL;     // 上升緣停止
+    bReset          : BOOL;     // 計數歸零
+    bJogReverse     : BOOL;     // 停止狀態下按住可寸動反轉,把料退回進料端
+END_VAR
+VAR_OUTPUT
+    iState          : INT;      // 目前步序,方便在 HMI 上觀察
+    bRunning        : BOOL;
+    bTimeout        : BOOL;     // 氣缸動作逾時
+    bDirFault       : BOOL;     // 模擬器回報方向互鎖異常
+END_VAR
+VAR
+    fbStart         : R_TRIG;
+    fbStop          : R_TRIG;
+    fbInspect       : R_TRIG;   // 檢測位感測器上升緣
+    tonSafety       : TON;      // 氣缸動作逾時保護
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbStart(CLK := bStart);
+fbStop(CLK := bStop);
+fbInspect(CLK := GVL_Conveyor.bSensorInspect);
+
+GVL_Conveyor.bResetCounters := bReset;
+
+// 模擬器回報方向互鎖異常 = 這支程式同時給了正反轉命令。
+// 真實機台的電磁接觸器互鎖會擋掉,但程式不該讓它發生 — 直接停機。
+bDirFault := GVL_Conveyor.bBeltFault;
+IF bDirFault THEN
+    iState := 0;
+END_IF
+
+IF fbStop.Q THEN
+    iState := 0;
+END_IF
+
+CASE iState OF
+
+0:  // ---- 停止(此狀態下可用 bJogReverse 寸動反轉退料)----
+    bRunning := FALSE;
+    GVL_Conveyor.bFeederRun   := FALSE;
+    GVL_Conveyor.bBeltForward := FALSE;
+    GVL_Conveyor.bCylExtend   := FALSE;
+    bTimeout := FALSE;
+    // 反轉只在正轉確定為 FALSE 時才給,避免自己製造出互鎖異常
+    GVL_Conveyor.bBeltReverse := bJogReverse;
+    IF fbStart.Q THEN
+        GVL_Conveyor.bBeltReverse := FALSE;
+        iState := 10;
+    END_IF
+
+10: // ---- 運轉:進料 + 正轉輸送 ----
+    bRunning := TRUE;
+    GVL_Conveyor.bFeederRun   := TRUE;
+    GVL_Conveyor.bBeltReverse := FALSE;
+    GVL_Conveyor.bBeltForward := TRUE;
+    GVL_Conveyor.bCylExtend   := FALSE;
+    IF fbInspect.Q THEN
+        iState := 20;
+    END_IF
+
+20: // ---- 停帶判別 ----
+    GVL_Conveyor.bBeltForward := FALSE;
+    IF GVL_Conveyor.bPartIsNg THEN
+        iState := 30;
+    ELSE
+        iState := 50;
+    END_IF
+
+30: // ---- 氣缸推出 ----
+    GVL_Conveyor.bCylExtend := TRUE;
+    IF GVL_Conveyor.bCylExtended THEN
+        iState := 40;
+    END_IF
+
+40: // ---- 氣缸縮回 ----
+    GVL_Conveyor.bCylExtend := FALSE;
+    IF GVL_Conveyor.bCylRetracted THEN
+        iState := 10;
+    END_IF
+
+50: // ---- OK 品放行:重新起帶,等零件離開檢測窗 ----
+    GVL_Conveyor.bBeltForward := TRUE;
+    IF NOT GVL_Conveyor.bSensorInspect THEN
+        iState := 10;
+    END_IF
+
+END_CASE
+
+// 氣缸動作逾時保護:超過 3 秒沒到位就報警並停機
+tonSafety(IN := (iState = 30) OR (iState = 40), PT := T#3S);
+IF tonSafety.Q THEN
+    bTimeout := TRUE;
+    iState := 0;
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

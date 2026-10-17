@@ -1,0 +1,26 @@
+node_modules/
+web/dist/
+release/
+.claude/
+*.log
+.DS_Store
+Thumbs.db
+
+# I/O 對映是綁定該台 PLC 的本機設定。想把固定的對映當教材一起發給學員,
+# 就把這行拿掉,讓 config/io-mapping.json 進版控。
+/config/
+
+# Visual Studio / TwinCAT XAE 產生物
+.vs/
+*.suo
+*.user
+**/_Boot/
+**/_CompileInfo/
+**/_Libraries/
+*.compiled-library*
+*.compileinfo
+*.tclrs
+*.tpzip
+*.tnzip
+*.bak
+*.~u

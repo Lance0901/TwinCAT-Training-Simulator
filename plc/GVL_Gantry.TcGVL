@@ -1,0 +1,60 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <GVL Name="GVL_Gantry" Id="{ac29f278-92a8-49e6-b979-9ff449a42037}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL
+    // =====================================================================
+    // 場景 2:XY 定位滑台 — 與模擬器的介面(NC 虛擬軸版本)
+    //
+    // 運動控制完全由 TwinCAT NC 負責,模擬器只扮演「機械本體」:
+    //   1. PLC 把 AxisX.NcToPlc.ActPos 抄進 rNcActPosX
+    //   2. 模擬器讀了之後直接把機構搬到那個位置
+    //   3. 但機械行程是硬的(X 0..400 mm、Y 0..300 mm),
+    //      NC 命令跑出去,機構會撞上擋塊停住並發出 bCollision
+    //
+    // 換句話說:NC 的軟體極限沒設好,這裡就會撞給你看。
+    // =====================================================================
+
+    // ---------- PLC → 模擬器(致動器 / 軸回授)----------
+    //
+    // 這裡沒有「軸致能」訊號:NC 模式下 MC_Power 沒致能,NC 就不會產生新位置,
+    // 增量不變、機構自然停著,不需要再告訴模擬器一次。
+    // 也沒有實際速度:模擬器從增量的變化自己就算得出來。
+
+    // 真正驅動機構的訊號:NC 依自己的 Scaling Factor 送出的增量數。
+    // 模擬器收到後用「它自己的」機械規格換算成位移 ——
+    // 兩邊規格對不上,機構走的距離就跟命令不同,很快就會撞上擋塊。
+    iNcActIncX          : DINT;     // X 軸馬達增量位置 [inc]
+    iNcActIncY          : DINT;     // Y 軸馬達增量位置 [inc]
+
+    // 以下兩個只是拿來對照的:NC「以為」自己在哪
+    rNcActPosX          : LREAL;    // X 軸 NC 實際位置 [mm] ← AxisX.NcToPlc.ActPos
+    rNcActPosY          : LREAL;    // Y 軸 NC 實際位置 [mm] ← AxisY.NcToPlc.ActPos
+    bNozzleDown         : BOOL;     // 吸嘴下降
+    bVacuumOn           : BOOL;     // 真空吸附
+    bResetAlarm         : BOOL;     // 警報確認 —— 只承認事件,不代表座標恢復可信
+
+    // ---------- 模擬器 → PLC(感測器 / 機構狀態)----------
+    rMachinePosX        : LREAL;    // X 機構實際位置 [mm],被擋塊夾在 0..400
+    rMachinePosY        : LREAL;    // Y 機構實際位置 [mm],被擋塊夾在 0..300
+    rFollowError        : LREAL;    // NC 位置與機構位置的最大差值 [mm]
+    bCollision          : BOOL;     // 撞上機械擋塊(閂鎖,bResetAlarm 可承認)
+    iCollisionAxis      : INT;      // 0=無 1=X 軸 2=Y 軸 3=兩軸同時
+    // 撞過之後機構與 NC 的座標就對不上了。按警報確認「不會」清掉這個旗標,
+    // 必須真的把機構開回原點感測器(X、Y 都 <= 8 mm)才會自動解除。
+    // 為 TRUE 期間真空吸附一律不成立 —— 位置不可信,吸了也是錯的。
+    bHomingRequired     : BOOL;     // 需要重新原點復歸
+    bHomeSwitchX        : BOOL;     // X 原點感測器(機構位置 <= 8 mm)
+    bHomeSwitchY        : BOOL;     // Y 原點感測器
+    bLimitXNeg          : BOOL;     // X 負向硬體極限(<= 5 mm)
+    bLimitXPos          : BOOL;     // X 正向硬體極限(>= 395 mm)
+    bLimitYNeg          : BOOL;     // Y 負向硬體極限
+    bLimitYPos          : BOOL;     // Y 正向硬體極限
+    bNozzleIsDown       : BOOL;     // 吸嘴下限位
+    bNozzleIsUp         : BOOL;     // 吸嘴上限位
+    bPartHeld           : BOOL;     // 真空確認(已吸住工件)
+    bPartAtPick         : BOOL;     // 取料位仍有料
+    iCountPlaced        : DINT;     // 完成放料數
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <GVL Name="GVL_Conveyor" Id="{0b915781-3061-4c17-9886-0f89ec50144b}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL
+    // =====================================================================
+    // 場景 1:輸送帶分料站 — 與模擬器的介面
+    //
+    // PLC → 模擬器:致動器命令(由 PLC 程式寫入)
+    // 模擬器 → PLC:感測器回饋(由模擬器寫入,PLC 只能讀)
+    //
+    // 注意:標示為「模擬器寫入」的變數請勿在 PLC 程式中賦值,
+    //       否則每個週期都會被模擬器覆蓋,行為會很難除錯。
+    // =====================================================================
+
+    // ---------- PLC → 模擬器(致動器)----------
+    bFeederRun          : BOOL;     // 進料機構啟動
+    bBeltForward        : BOOL;     // 輸送帶正轉(往出料端)
+    bBeltReverse        : BOOL;     // 輸送帶反轉(往進料端)
+    bCylExtend          : BOOL;     // 氣缸推出電磁閥(單動,FALSE 自動縮回)
+    bResetCounters      : BOOL;     // 計數歸零(持續為 TRUE 期間持續歸零)
+
+    // ---------- 模擬器 → PLC(感測器)----------
+    bSensorEntry        : BOOL;     // 進料感測器
+    bSensorInspect      : BOOL;     // 檢測位感測器
+    bSensorExit         : BOOL;     // 出料感測器
+    bPartIsNg           : BOOL;     // 檢測位上的零件為 NG 品
+    bCylExtended        : BOOL;     // 氣缸前限位
+    bCylRetracted       : BOOL;     // 氣缸後限位
+    bBeltFault          : BOOL;     // 正反轉同時給命令 → 皮帶停止並報異常
+    rBeltPos            : LREAL;    // 皮帶累積位移 [mm](反轉時會減少)
+    // 兩個都是「位置計數器」,不看零件好壞:
+    // 分料沒推成功的 NG 品會計進 iCountOk,推錯的 OK 品會計進 iCountNg。
+    // 拿它們跟實際投料比對,就能驗證分料邏輯寫得對不對。
+    iCountOk            : DINT;     // 從出料端離開的總數
+    iCountNg            : DINT;     // 被推入退料槽的總數
+    iCountReturned      : DINT;     // 反轉退回進料端而流失的數量
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

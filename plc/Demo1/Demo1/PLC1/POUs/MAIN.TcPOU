@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="MAIN" Id="{57953d7d-7747-4a37-b6e1-a577233da376}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+	fbCTU1 : CTU;
+	fbCTU2 : CTU;
+	fbCTU3 : CTU;
+	iState : INT;
+	fbRtrigS1 : R_TRIG;
+	fbRtrigS2 : R_TRIG;
+	fbRtrigS3 : R_TRIG;
+	
+	
+	
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbRtrigS1(CLK:=GVL.bSensorEntry , Q=> );
+fbRtrigS2(CLK:=GVL.bSensorInspect , Q=> );
+fbRtrigS3(CLK:=GVL.bSensorExit , Q=> );
+
+fbCTU1(
+	CU:= fbRtrigS1.Q , 
+	RESET:= , 
+	PV:=999 , 
+	Q=> , 
+	CV=> );
+fbCTU2(CU:=fbRtrigS2.Q, PV:=999);
+fbCTU3(CU:=fbRtrigS3.Q, PV:=999);
+
+IF GVL.bStop THEN
+	iState := 999;
+END_IF
+
+
+CASE iState OF 
+	0:
+		fbCTU1.RESET := TRUE;
+		fbCTU2.RESET := TRUE;
+		fbCTU3.RESET := TRUE;
+		GVL.bBeltForward := FALSE;
+		GVL.bBeltReverse := FALSE;		
+		GVL.bCylExtend := FALSE;
+		GVL.bFeederRun := FALSE;
+		IF GVL.bStart THEN
+			iState :=100;
+		END_IF
+		
+	100:
+		fbCTU1.RESET := FALSE;
+		fbCTU2.RESET := FALSE;
+		fbCTU3.RESET := FALSE;		
+		GVL.bFeederRun := TRUE;
+		GVL.bBeltForward := TRUE;
+		IF GVL.bPartIsNg AND GVL.bSensorInspect THEN
+			GVL.bCylExtend := TRUE;
+		ELSIF GVL.bCylExtended THEN
+			GVL.bCylExtend := FALSE; 
+			
+		END_IF
+		IF fbCTU3.CV >=20 THEN
+			iState :=200;
+		END_IF
+	200:
+		GVL.bBeltForward := FALSE;
+		GVL.bBeltReverse := FALSE;		
+		GVL.bCylExtend := FALSE;
+		GVL.bFeederRun := FALSE;
+		iState :=0;
+	999:
+		GVL.bBeltForward := FALSE;
+		GVL.bBeltReverse := FALSE;		
+		GVL.bCylExtend := FALSE;
+		GVL.bFeederRun := FALSE;
+		IF GVL.bStart THEN
+			iState :=100;
+		END_IF
+
+END_CASE]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

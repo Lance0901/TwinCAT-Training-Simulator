@@ -1,0 +1,81 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="MAIN" Id="{9c2c9c45-9951-4347-b4fb-399ee04fc440}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+    模擬訓練專案主程式
+
+    三個場景的邏輯都在這裡呼叫。它們各自操作不同的 GVL,互不干擾,
+    所以可以同時常駐;模擬器一次只連一個場景,沒被連的那組單純空轉。
+
+    上線步驟:
+      1. 建立 PLC 專案,把 plc\ 資料夾裡的 GVL 與 POU 全部加進來
+      2. 確認本 POU 掛在一個 PlcTask 底下,週期建議 10 ms
+      3. Activate Configuration → 切到 Run
+      4. 啟動模擬器,在網頁上選擇場景,按下對應的 bStartXxx
+
+    除錯時可以直接在 Online 視窗把 bStartXxx 打成 TRUE,不需要 HMI。
+*)
+PROGRAM MAIN
+VAR
+    // ---- 場景 1:輸送帶分料站 ----
+    fbConveyor      : FB_ConveyorDemo;
+    bStartConveyor  : BOOL;
+    bStopConveyor   : BOOL;
+    bResetConveyor  : BOOL;
+    bJogConveyorRev : BOOL;     // 停止狀態下按住可反轉退料(非脈衝,要自己放開)
+
+    // ---- 場景 2:XY 定位滑台(NC 虛擬軸)----
+    // 這兩個 AXIS_REF 必須在 XAE 裡連結到實際的 NC 軸,否則 MC 功能塊會直接報錯。
+    // 連結方式:PLC 專案 → 展開 MAIN → 選 AxisX → Link To PLC 選對應的 NC Axis。
+    AxisX           : AXIS_REF;
+    AxisY           : AXIS_REF;
+    fbGantry        : FB_GantryDemo;
+    bStartGantry    : BOOL;
+    bStopGantry     : BOOL;
+    bResetGantry    : BOOL;
+
+    // ---- 場景 3:液位溫度槽 ----
+    fbTank          : FB_TankDemo;
+    bStartTank      : BOOL;
+    bStopTank       : BOOL;
+    rLevelSetpoint  : LREAL := 600.0;
+    rTempSetpoint   : LREAL := 55.0;
+
+    // Task 週期 [s]。改了 PlcTask 週期記得同步改這裡,否則 PID 的積分/微分會失準。
+    rCycleTime      : LREAL := 0.01;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbConveyor(
+    bStart      := bStartConveyor,
+    bStop       := bStopConveyor,
+    bReset      := bResetConveyor,
+    bJogReverse := bJogConveyorRev
+);
+
+fbGantry(
+    AxisX  := AxisX,
+    AxisY  := AxisY,
+    bStart := bStartGantry,
+    bStop  := bStopGantry,
+    bReset := bResetGantry
+);
+
+fbTank(
+    bStart         := bStartTank,
+    bStop          := bStopTank,
+    rLevelSetpoint := rLevelSetpoint,
+    rTempSetpoint  := rTempSetpoint,
+    rCycleTime     := rCycleTime
+);
+
+// 啟動旗標設計成脈衝:FB 內部用 R_TRIG 取上升緣,這裡按下後自動復歸,
+// 免得學員在 Online 視窗打成 TRUE 後忘記關掉,導致停不下來。
+bStartConveyor := FALSE;
+bStartGantry   := FALSE;
+bStartTank     := FALSE;
+bStopConveyor  := FALSE;
+bStopGantry    := FALSE;
+bStopTank      := FALSE;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

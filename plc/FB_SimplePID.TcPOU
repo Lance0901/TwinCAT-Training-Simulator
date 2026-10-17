@@ -1,0 +1,93 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.0">
+  <POU Name="FB_SimplePID" Id="{8887236c-3e3d-4f85-aa93-428ad85af285}" SpecialFunc="None">
+    <Declaration><![CDATA[(*
+    教學用 PID 控制器,不依賴任何額外函式庫或授權。
+
+    特色:
+      - 微分作用取「量測值的微分」而非誤差的微分,設定值階躍時不會產生微分衝擊
+      - 帶抗積分飽和 (anti-windup):輸出飽和時停止累積積分項
+      - 週期時間由呼叫端傳入,搭配 TwinCAT 的工作週期使用
+
+    Tc2_ControllerToolbox 的 FB_BasicPID 功能更完整,但需要額外函式庫;
+    這裡自己實作是為了讓學員看得見每一項的作用。
+*)
+FUNCTION_BLOCK FB_SimplePID
+VAR_INPUT
+    bEnable     : BOOL;         // FALSE 時輸出歸零並清空積分
+    rSetpoint   : LREAL;        // 設定值
+    rActual     : LREAL;        // 量測值
+    rKp         : LREAL := 1.0;  // 比例增益
+    rTi         : LREAL := 10.0; // 積分時間 [s],0 = 關閉積分
+    rTd         : LREAL := 0.0;  // 微分時間 [s],0 = 關閉微分
+    rOutMin     : LREAL := 0.0;
+    rOutMax     : LREAL := 100.0;
+    rCycleTime  : LREAL := 0.01; // 呼叫週期 [s]
+END_VAR
+VAR_OUTPUT
+    rOutput     : LREAL;
+    rError      : LREAL;
+    bSaturated  : BOOL;         // 輸出已飽和(積分暫停中)
+END_VAR
+VAR
+    rIntegral   : LREAL;
+    rPrevActual : LREAL;
+    rRaw        : LREAL;        // 限幅前的輸出
+    bClampHigh  : BOOL;         // 上一輪撞到上限
+    bClampLow   : BOOL;         // 上一輪撞到下限
+    bFirstScan  : BOOL := TRUE;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF NOT bEnable THEN
+    rIntegral   := 0;
+    rOutput     := 0;
+    rError      := 0;
+    bSaturated  := FALSE;
+    bClampHigh  := FALSE;
+    bClampLow   := FALSE;
+    bFirstScan  := TRUE;
+    rPrevActual := rActual;
+    RETURN;
+END_IF
+
+rError := rSetpoint - rActual;
+
+// 第一個掃描週期不算微分,避免 rPrevActual 尚未初始化造成的假尖峰
+IF bFirstScan THEN
+    rPrevActual := rActual;
+    bFirstScan  := FALSE;
+END_IF
+
+// ---- 積分項:anti-windup ----
+// 只擋住「會讓飽和更嚴重」的方向。若一律停止累積,誤差反向時積分項會卡死,
+// 控制器再也回不到線性區 — 這是自寫 PID 最常見的坑。
+IF (rTi > 0)
+   AND NOT (bClampHigh AND (rError > 0))
+   AND NOT (bClampLow  AND (rError < 0)) THEN
+    rIntegral := rIntegral + (rError * rCycleTime / rTi);
+END_IF
+
+// ---- 微分項:對量測值微分,設定值跳動不會踢出尖峰 ----
+// 注意這裡是 -(rActual - rPrevActual),等價於誤差的微分但無設定值衝擊
+rRaw := rKp * (rError + rIntegral - rTd * (rActual - rPrevActual) / rCycleTime);
+rPrevActual := rActual;
+
+// ---- 限幅 ----
+IF rRaw > rOutMax THEN
+    rOutput    := rOutMax;
+    bClampHigh := TRUE;
+    bClampLow  := FALSE;
+ELSIF rRaw < rOutMin THEN
+    rOutput    := rOutMin;
+    bClampHigh := FALSE;
+    bClampLow  := TRUE;
+ELSE
+    rOutput    := rRaw;
+    bClampHigh := FALSE;
+    bClampLow  := FALSE;
+END_IF
+
+bSaturated := bClampHigh OR bClampLow;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
